@@ -1,16 +1,25 @@
 import os
+import io
 import json
+import datetime
 import streamlit as st
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.errors import HttpError
 
-SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
+# --------------------------
+# CONFIG
+# --------------------------
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 ROOT_FOLDER_NAME = "PAPSID 1-5 hooajad"
 CACHE_FILE = "drive_cache.json"
 
-
+# --------------------------
+# GOOGLE DRIVE AUTH
+# --------------------------
 def get_credentials():
     creds = None
     if os.path.exists("token.json"):
@@ -25,7 +34,6 @@ def get_credentials():
             token.write(creds.to_json())
     return creds
 
-
 def get_folder_id(service, folder_name):
     res = service.files().list(
         q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
@@ -34,7 +42,9 @@ def get_folder_id(service, folder_name):
     folders = res.get("files", [])
     return folders[0]["id"] if folders else None
 
-
+# --------------------------
+# FETCH FILE TREE
+# --------------------------
 def fetch_drive_tree(service, folder_id, progress=None):
     """Recursively fetch all files and folders from Google Drive."""
     items = []
@@ -44,7 +54,7 @@ def fetch_drive_tree(service, folder_id, progress=None):
         res = service.files().list(
             q=query,
             pageSize=100,
-            fields="nextPageToken, files(id, name, mimeType, parents)",
+            fields="nextPageToken, files(id, name, mimeType, parents, webViewLink)",
             pageToken=page_token
         ).execute()
         for f in res.get("files", []):
@@ -58,37 +68,67 @@ def fetch_drive_tree(service, folder_id, progress=None):
             break
     return items
 
-
 def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
 
-
 def save_cache(data):
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+# --------------------------
+# SEARCH
+# --------------------------
+def search_files(cached_files, name_query="", date_query=None, use_date=True):
+    results = []
+    name_query_lower = name_query.lower()
+    for f in cached_files:
+        match_name = name_query_lower in f["name"].lower()
+        match_date = True
+        if use_date and date_query:
+            match_date = date_query in f["name"]
+        if match_name and match_date:
+            results.append(f)
+    return results
 
-def search_files(cached_files, query):
-    query_lower = query.lower()
-    return [f for f in cached_files if query_lower in f["name"].lower()]
+# --------------------------
+# DOWNLOAD
+# --------------------------
+def download_file(service, file_id, mimeType):
+    try:
+        if mimeType == "application/vnd.google-apps.document":
+            request = service.files().export_media(fileId=file_id, mimeType="application/pdf")
+        elif mimeType == "application/vnd.google-apps.spreadsheet":
+            request = service.files().export_media(fileId=file_id, mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        elif mimeType == "application/vnd.google-apps.presentation":
+            request = service.files().export_media(fileId=file_id, mimeType="application/pdf")
+        else:
+            request = service.files().get_media(fileId=file_id)
 
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+        return fh.read()
+    except HttpError as e:
+        st.warning(f"Cannot download '{file_id}': {e}")
+        return None
 
 # --------------------------
 # STREAMLIT UI
 # --------------------------
 st.set_page_config(page_title="Drive Explorer", layout="wide")
-
 st.title("📂 Google Drive Explorer")
-st.markdown("Search and browse your cached Google Drive files.")
+st.markdown("Search and browse your Google Drive files.")
 
-# Load credentials
+# Auth
 creds = get_credentials()
 service = build("drive", "v3", credentials=creds)
 root_id = get_folder_id(service, ROOT_FOLDER_NAME)
-
 if not root_id:
     st.error(f"Folder '{ROOT_FOLDER_NAME}' not found.")
     st.stop()
@@ -104,10 +144,34 @@ else:
     save_cache(cache)
     st.success(f"Fetched {len(cache)} files and saved cache.")
 
-# Search box
-query = st.text_input("🔍 Search files by name:")
-if query:
-    results = search_files(cache, query)
-    st.write(f"Found {len(results)} files matching '{query}':")
-    for f in results:
+# Sidebar controls
+st.sidebar.header("Search Options")
+name_query = st.sidebar.text_input("File name contains:")
+use_date = st.sidebar.checkbox("Filter by date in name", value=True)
+selected_date = st.sidebar.date_input("Select date", value=datetime.date.today())
+
+date_str = selected_date.strftime("%d.%m.%Y")
+
+# Search
+results = search_files(cache, name_query, date_query=date_str, use_date=use_date)
+st.write(f"Found {len(results)} files.")
+
+# Display results
+for f in results:
+    st.markdown("---")
+    col1, col2 = st.columns([4,1])
+    with col1:
         st.markdown(f"📄 **{f['name']}**")
+        if "webViewLink" in f:
+            st.markdown(f"[Open in Drive]({f['webViewLink']})")
+    with col2:
+        file_bytes = download_file(service, f["id"], f["mimeType"])
+        if file_bytes:
+            st.download_button(
+                label="⬇ Download",
+                data=file_bytes,
+                file_name=f["name"],
+                mime="application/octet-stream",
+                key=f["id"]
+            )
+        st.markdown(f"[Share]({f.get('webViewLink','#')})", unsafe_allow_html=True)
