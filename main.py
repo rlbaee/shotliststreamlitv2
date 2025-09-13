@@ -46,7 +46,6 @@ def get_folder_id(service, folder_name):
 # FETCH FILE TREE
 # --------------------------
 def fetch_drive_tree(service, folder_id, progress=None):
-    """Recursively fetch all files and folders from Google Drive."""
     items = []
     query = f"'{folder_id}' in parents and trashed=false"
     page_token = None
@@ -122,8 +121,8 @@ def download_file(service, file_id, mimeType):
 # STREAMLIT UI
 # --------------------------
 st.set_page_config(page_title="Drive Explorer", layout="wide")
-st.title("📂 Google Drive Explorer")
-st.markdown("Search and browse your Google Drive files.")
+st.markdown("<h1 style='text-align:center;'>📂 Your Google Drive Explorer</h1>", unsafe_allow_html=True)
+st.markdown("---")
 
 # Auth
 creds = get_credentials()
@@ -144,26 +143,30 @@ else:
     save_cache(cache)
     st.success(f"Fetched {len(cache)} files and saved cache.")
 
-# Sidebar controls
-st.sidebar.header("Search Options")
-name_query = st.sidebar.text_input("File name contains:")
-use_date = st.sidebar.checkbox("Filter by date in name", value=True)
-selected_date = st.sidebar.date_input("Select date", value=datetime.date.today())
+# Search options (inline, not sidebar)
+st.markdown("### Search Options")
+col1, col2, col3 = st.columns([3,1,1])
+with col1:
+    name_query = st.text_input("File name contains:", "")
+with col2:
+    use_date = st.checkbox("Filter by date in name", value=True)
+with col3:
+    selected_date = st.date_input("Select date", value=datetime.date.today())
 
 date_str = selected_date.strftime("%d.%m.%Y")
 
 # Search
 results = search_files(cache, name_query, date_query=date_str, use_date=use_date)
-st.write(f"Found {len(results)} files.")
+st.markdown(f"### Found {len(results)} files")
 
-# Display results
+# Display results as cards
 for f in results:
-    st.markdown("---")
+    st.markdown("<div style='padding:15px; border:1px solid #ddd; border-radius:10px; margin-bottom:10px;'>", unsafe_allow_html=True)
     col1, col2 = st.columns([4,1])
     with col1:
-        st.markdown(f"📄 **{f['name']}**")
+        st.markdown(f"📄 <b>{f['name']}</b>", unsafe_allow_html=True)
         if "webViewLink" in f:
-            st.markdown(f"[Open in Drive]({f['webViewLink']})")
+            st.markdown(f"<a href='{f['webViewLink']}' target='_blank'>Open in Drive</a>", unsafe_allow_html=True)
     with col2:
         file_bytes = download_file(service, f["id"], f["mimeType"])
         if file_bytes:
@@ -174,4 +177,6 @@ for f in results:
                 mime="application/octet-stream",
                 key=f["id"]
             )
-        st.markdown(f"[Share]({f.get('webViewLink','#')})", unsafe_allow_html=True)
+        if "webViewLink" in f:
+            st.markdown(f"<a href='{f['webViewLink']}' target='_blank'>Share</a>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
